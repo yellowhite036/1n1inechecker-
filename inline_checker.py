@@ -65,12 +65,21 @@ NAV_TIMEOUT_MS  = 60000   # 導覽逾時（毫秒），太短容易在網路較�
 DEBUG_DUMP_ON_EMPTY = True  # 找不到任何日期/時段時，自動存一份頁面 HTML 方便排查
 
 # 網址歷史紀錄檔（跟本程式放在同一個資料夾）
-HISTORY_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "url_history.json"
-)
-DEBUG_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "debug_dumps"
-)
+def get_base_dir():
+    """取得程式所在資料夾，無論是直接執行 .py 還是打包成 .exe。"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包後執行：用 exe 檔案本身所在的資料夾
+        # （而不是 --onefile 展開用的暫存資料夾 sys._MEIPASS）
+        return os.path.dirname(sys.executable)
+    else:
+        # 直接執行 .py 檔案
+        return os.path.dirname(os.path.abspath(__file__))
+
+BASE_DIR = get_base_dir()
+
+# 網址歷史紀錄檔（跟 exe / py 放在同一個資料夾）
+HISTORY_FILE = os.path.join(BASE_DIR, "url_history.json")
+DEBUG_DIR = os.path.join(BASE_DIR, "debug_dumps")
 # ──────────────────────────────────────────────────────────────────────────────
 
 
