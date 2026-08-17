@@ -58,7 +58,7 @@ echo.
 
 REM --onefile: bundle into a single exe
 REM (no --noconsole here: this keeps the console window so input()/stdin works)
-python -m PyInstaller --onefile "%SCRIPT%"
+python -m PyInstaller --onefile --collect-all playwright --collect-all win11toast "%SCRIPT%"
 
 echo.
 echo ============================================
