@@ -24,17 +24,23 @@ inline_checker.py  -  Inline 訂位監控程式
 ===========================================================
 執行此程式後，會先讓你選擇：
   1. 要監控的訂位網址（可輸入新網址，或從曾經用過的網址紀錄中選擇）
-  2. 掃描模式：
+  2. 用餐人數（大人），直接按 Enter 則使用預設 2 位
+  3. 掃描模式：
      [日期模式] 掃描月曆，找出哪些日期還有位置可訂
      [時段模式] 鎖定某一天，監看當天還有哪些時段可訂
 接著會自動彈出一個 Chrome 視窗並開啟該訂位頁面。
 如果有遇到「人機驗證 (CAPTCHA)」，請在該視窗中手動點擊通過。
 通過後，程式就會在背景（或該視窗中）定期自動幫你檢查是否有位置！
 
+在每次檢查之間的等待時間內，只要按下 M 鍵，就能隨時跳回「選擇掃描模式」，
+不需要整個關閉重開程式（網址、瀏覽器分頁都會保留）。
+
 【本版變更】
+新增：啟動時可以自行輸入用餐人數（大人），不選則預設為 2 位。
 日期模式改回用 Inline 頁面上 data-cy="date-picker" / data-cy="bt-cal-day"
 這組測試屬性去讀月曆格子（data-date 屬性 + disabled 屬性判斷可訂與否），
 比用 class 名稱猜「時段按鈕」穩定，改版時比較不容易失效。
+新增：等待期間按 M 鍵可隨時切換掃描模式（日期模式 / 時段模式），不必重開程式。
 ===========================================================
 """
 import time
@@ -44,6 +50,7 @@ import json
 import winsound
 import os
 import threading
+import msvcrt
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
@@ -60,9 +67,12 @@ SCAN_INTERVAL_MIN = 300   # 每次檢查間隔的下限秒數 (5分鐘)
 SCAN_INTERVAL_MAX = 600   # 每次檢查間隔的上限秒數 (10分鐘)，實際間隔會在區間內隨機
 PAGE_WAIT_MS    = 4000    # 每次刷新後等待 JS 的毫秒數
 USER_DATA_DIR   = r"C:\chrome_debug_inline_v2"  # 改用新資料夾避免鎖定問題
-PARTY_SIZE      = 2       # 用餐人數（大人）
+DEFAULT_PARTY_SIZE = 2     # 用餐人數（大人）的預設值，啟動時可另外輸入覆蓋
+MIN_PARTY_SIZE  = 1
+MAX_PARTY_SIZE  = 20       # 依 Inline 頁面選單實際上限調整即可
 NAV_TIMEOUT_MS  = 60000   # 導覽逾時（毫秒），太短容易在網路較慢時失敗
 DEBUG_DUMP_ON_EMPTY = True  # 找不到任何日期/時段時，自動存一份頁面 HTML 方便排查
+SWITCH_MODE_KEY = "m"     # 等待期間按下此鍵可跳回選擇模式
 
 # 網址歷史紀錄檔（跟本程式放在同一個資料夾）
 def get_base_dir():
@@ -168,6 +178,33 @@ def dump_debug_snapshot(page, tag):
         print(f"[{ts()}]   ⚠️ 存 debug 頁面失敗: {e}")
 
 
+def interruptible_sleep(wait_seconds, allow_switch=True):
+    """
+    等待 wait_seconds 秒，但每 0.2 秒檢查一次鍵盤緩衝區。
+    如果 allow_switch 為 True 且使用者在等待期間按下 SWITCH_MODE_KEY（預設 M），
+    會立刻結束等待並回傳 True，代表使用者要求跳回選擇模式畫面。
+    正常等到時間到，回傳 False。
+    """
+    end_time = time.time() + wait_seconds
+    while time.time() < end_time:
+        if allow_switch:
+            try:
+                while msvcrt.kbhit():
+                    key = msvcrt.getch()
+                    try:
+                        key_char = key.decode("utf-8", errors="ignore").lower()
+                    except Exception:
+                        key_char = ""
+                    if key_char == SWITCH_MODE_KEY:
+                        return True
+            except Exception:
+                # 非互動式主控台（例如某些打包環境）可能不支援 msvcrt，
+                # 這種情況就直接退化成一般的 time.sleep。
+                pass
+        time.sleep(0.2)
+    return False
+
+
 # ─── 網址歷史紀錄（簡易 JSON 資料庫） ──────────────────────────────────────────
 def load_url_history():
     if not os.path.exists(HISTORY_FILE):
@@ -271,6 +308,25 @@ def choose_url():
     return chosen_url
 
 
+def choose_party_size():
+    """讓使用者輸入用餐人數（大人），直接按 Enter 則使用預設值。"""
+    print("=" * 65)
+    print("   設定用餐人數")
+    print("=" * 65)
+    while True:
+        raw = input(
+            f"請輸入用餐人數（大人，直接按 Enter 使用預設 {DEFAULT_PARTY_SIZE} 位）: "
+        ).strip()
+        if raw == "":
+            print(f"\n[{ts()}] 已選擇人數: {DEFAULT_PARTY_SIZE} 位大人\n")
+            return DEFAULT_PARTY_SIZE
+        if raw.isdigit() and MIN_PARTY_SIZE <= int(raw) <= MAX_PARTY_SIZE:
+            party_size = int(raw)
+            print(f"\n[{ts()}] 已選擇人數: {party_size} 位大人\n")
+            return party_size
+        print(f"⚠️ 請輸入 {MIN_PARTY_SIZE}~{MAX_PARTY_SIZE} 之間的整數，或直接按 Enter 使用預設值。\n")
+
+
 def choose_target_date():
     print()
     print("請輸入要監看時段的日期，格式為 YYYY-MM-DD（例如 2025-09-07）")
@@ -302,6 +358,40 @@ def choose_mode():
             print(f"\n[{ts()}] 已選擇：時段模式（鎖定日期 {target_date}）\n")
             return "TIME_SLOT", target_date
         print("⚠️ 輸入無效，請重新輸入。\n")
+
+
+def handle_switch_request(page, current_url, party_size):
+    """
+    使用者在等待期間按下切換鍵後呼叫。
+    先問要「只切換掃描模式」還是「重新選擇店家網址」，
+    如果選擇重新選店家，會直接在同一個瀏覽器分頁導覽到新網址，
+    並接著再選一次掃描模式（因為換了店家，原本鎖定的日期/時段不一定適用）。
+    回傳 (新的 url, 新的 mode, 新的 target_date)。
+    """
+    print("=" * 65)
+    print("   切換設定")
+    print("=" * 65)
+    print("  [1] 只切換掃描模式（日期模式 / 時段模式）")
+    print("  [2] 重新選擇店家網址（會回到選擇店家畫面，接著再選一次模式）")
+    print()
+    choice = input("請輸入編號（直接按 Enter 預設為 1）: ").strip()
+
+    if choice == "2":
+        new_url = choose_url()
+        print(f"[{ts()}] 前往新網址: {new_url}")
+        try:
+            page.goto(new_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        except Exception as e:
+            print(f"[{ts()}] ⚠️ 載入新網址失敗（{e}），嘗試重新整理一次...")
+            page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        page.wait_for_timeout(5000)
+        select_party_size(page, party_size)
+        page.wait_for_timeout(800)
+        new_mode, new_target_date = choose_mode()
+        return new_url, new_mode, new_target_date
+
+    new_mode, new_target_date = choose_mode()
+    return current_url, new_mode, new_target_date
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -363,7 +453,7 @@ def get_clickable_calendar_days(page):
     return page.locator('[data-cy="bt-cal-day"]')
 
 
-def check_availability(page):
+def check_availability(page, party_size):
     """刷新頁面並檢查可訂日期（日期模式）。"""
     try:
         page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
@@ -374,7 +464,7 @@ def check_availability(page):
             print(f"[{ts()}] WARNING: 人機驗證頁 (標題={title})")
             return "CAPTCHA", []
 
-        select_party_size(page, PARTY_SIZE)
+        select_party_size(page, party_size)
 
         try:
             page.wait_for_load_state("networkidle", timeout=5000)
@@ -474,7 +564,7 @@ def ymd_to_zh_date_label(date_str):
     return f"{dt.month}月{dt.day}日"
 
 
-def check_time_slots(page, target_date_str):
+def check_time_slots(page, target_date_str, party_size):
     """刷新頁面，掃描所有時段按鈕，篩出指定日期（YYYY-MM-DD）目前可訂的時間點。"""
     try:
         page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
@@ -485,7 +575,7 @@ def check_time_slots(page, target_date_str):
             print(f"[{ts()}] WARNING: 人機驗證頁 (標題={title})")
             return "CAPTCHA", []
 
-        select_party_size(page, PARTY_SIZE)
+        select_party_size(page, party_size)
 
         try:
             page.wait_for_load_state("networkidle", timeout=5000)
@@ -527,6 +617,30 @@ def next_interval():
     return random.uniform(SCAN_INTERVAL_MIN, SCAN_INTERVAL_MAX)
 
 
+def clear_stale_singleton_locks(user_data_dir):
+    """
+    清除 Chrome profile 資料夾裡殘留的 Singleton 鎖定檔。
+
+    常見情況：上一次程式被強制關閉（或當機）、或曾經手動開著同一個
+    --user-data-dir 的 Chrome 視窗，都會讓這個資料夾被視為「使用中」，
+    導致下次啟動時出現：
+      "Target page, context or browser has been closed"
+    這類看似跟程式邏輯無關、但其實是 Chrome 啟動失敗的錯誤。
+    """
+    lock_files = ["SingletonLock", "SingletonCookie", "SingletonSocket"]
+    removed_any = False
+    for name in lock_files:
+        path = os.path.join(user_data_dir, name)
+        try:
+            if os.path.exists(path) or os.path.islink(path):
+                os.remove(path)
+                removed_any = True
+        except Exception as e:
+            print(f"[{ts()}]   ⚠️ 清除殘留鎖定檔 {name} 失敗（可忽略，若稍後啟動失敗請手動處理）: {e}")
+    if removed_any:
+        print(f"[{ts()}] 已清除瀏覽器設定檔殘留的鎖定檔，避免「啟動失敗」問題。")
+
+
 def main():
     print("=" * 65)
     print("   Inline 訂位監控程式")
@@ -534,29 +648,40 @@ def main():
     print()
 
     url = choose_url()
+    party_size = choose_party_size()
     mode, target_date = choose_mode()
 
     print("瀏覽器只會開啟一次，之後在同一個分頁定期重新整理檢查，")
     print("不會每次都整個關閉重開。如果遇到人機驗證，視窗會保持開啟等你點擊通過！")
+    print(f"提示：在等待檢查的期間，隨時按下「{SWITCH_MODE_KEY.upper()}」鍵可以切換掃描模式，或重新選擇店家網址，不必重開程式。")
     print()
 
     os.makedirs(USER_DATA_DIR, exist_ok=True)
+    clear_stale_singleton_locks(USER_DATA_DIR)
 
     with sync_playwright() as pw:
         context = None
         try:
             print(f"[{ts()}] 正在啟動瀏覽器...")
-            context = pw.chromium.launch_persistent_context(
-                user_data_dir=USER_DATA_DIR,
-                headless=False,
-                channel="chrome",
-                viewport={"width": 1280, "height": 900},
-                args=[
-                    "--lang=zh-TW",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-                ignore_default_args=["--enable-automation"]
-            )
+            try:
+                context = pw.chromium.launch_persistent_context(
+                    user_data_dir=USER_DATA_DIR,
+                    headless=False,
+                    channel="chrome",
+                    viewport={"width": 1280, "height": 900},
+                    args=[
+                        "--lang=zh-TW",
+                        "--disable-blink-features=AutomationControlled",
+                    ],
+                    ignore_default_args=["--enable-automation"]
+                )
+            except Exception as e:
+                print(f"[{ts()}] ❌ 啟動瀏覽器失敗: {e}")
+                print()
+                print("可能原因：已經有另一個 Chrome 視窗（或殘留的背景行程）")
+                print(f"正在使用同一個設定檔資料夾：{USER_DATA_DIR}")
+                print("請開啟工作管理員，結束所有 chrome.exe 行程後，再重新執行本程式。")
+                raise
 
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
@@ -570,11 +695,11 @@ def main():
                 page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             page.wait_for_timeout(5000)
 
-            select_party_size(page, PARTY_SIZE)
+            select_party_size(page, party_size)
             page.wait_for_timeout(800)
 
             mode_desc = "日期模式" if mode == "DATE" else f"時段模式（鎖定 {target_date}）"
-            print(f"[{ts()}] 目前模式：{mode_desc}")
+            print(f"[{ts()}] 目前模式：{mode_desc} | 人數：{party_size} 位大人")
             print()
 
             scan = 0
@@ -583,9 +708,9 @@ def main():
                 print(f"[{ts()}] ── 第 {scan} 次檢查 ──")
 
                 if mode == "TIME_SLOT":
-                    status, results = check_time_slots(page, target_date)
+                    status, results = check_time_slots(page, target_date, party_size)
                 else:
-                    status, results = check_availability(page)
+                    status, results = check_availability(page, party_size)
 
                 if status == "FOUND":
                     if mode == "TIME_SLOT":
@@ -603,14 +728,19 @@ def main():
 
                 elif status == "CAPTCHA":
                     print(f"[{ts()}] ⚠️ 偵測到驗證頁！請在瀏覽器視窗中手動完成驗證。")
-                    print(f"[{ts()}] 30 秒後會自動重新檢查...")
+                    print(f"[{ts()}] 30 秒後會自動重新檢查...（等待期間按「{SWITCH_MODE_KEY.upper()}」鍵可切換模式或店家）")
                     alert()
                     notify(
                         "Inline 監控提醒 ⚠️",
                         "偵測到人機驗證，請手動點擊通過"
                         + f"\n下次檢查：{next_check_time_str(30)}"
                     )
-                    time.sleep(30)
+                    want_switch = interruptible_sleep(30)
+                    if want_switch:
+                        print(f"\n[{ts()}] 偵測到切換要求...\n")
+                        url, mode, target_date = handle_switch_request(page, url, party_size)
+                        mode_desc = "日期模式" if mode == "DATE" else f"時段模式（鎖定 {target_date}）"
+                        print(f"[{ts()}] 目前設定：{mode_desc} | 店家: {url}\n")
                     continue
 
                 else:
@@ -620,9 +750,14 @@ def main():
                         print(f"[{ts()}] 目前無可用位置。")
                     wait_s = next_interval()
 
-                print(f"[{ts()}] 下次檢查：{next_check_time_str(wait_s)}")
+                print(f"[{ts()}] 下次檢查：{next_check_time_str(wait_s)}（等待期間按「{SWITCH_MODE_KEY.upper()}」鍵可切換模式或店家）")
                 print()
-                time.sleep(wait_s)
+                want_switch = interruptible_sleep(wait_s)
+                if want_switch:
+                    print(f"\n[{ts()}] 偵測到切換要求...\n")
+                    url, mode, target_date = handle_switch_request(page, url, party_size)
+                    mode_desc = "日期模式" if mode == "DATE" else f"時段模式（鎖定 {target_date}）"
+                    print(f"[{ts()}] 目前設定：{mode_desc} | 店家: {url}\n")
 
         except KeyboardInterrupt:
             print()

@@ -10,3 +10,7 @@ __pycache__/
 
 # Chrome 使用者資料目錄（如果專案資料夾內有建立）
 chrome_debug_inline_v2/
+
+# PyInstaller / Build
+dist/
+build/
