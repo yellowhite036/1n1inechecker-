@@ -41,6 +41,10 @@ inline_checker.py  -  Inline 訂位監控程式
 這組測試屬性去讀月曆格子（data-date 屬性 + disabled 屬性判斷可訂與否），
 比用 class 名稱猜「時段按鈕」穩定，改版時比較不容易失效。
 新增：等待期間按 M 鍵可隨時切換掃描模式（日期模式 / 時段模式），不必重開程式。
+新增：按 M 切換時，除了切模式 / 換店家，現在也可以「重新選擇用餐人數」。
+修正：修復主迴圈中「找到位置 / 人機驗證 / 無位置」處理區塊的縮排錯誤，
+之前這段程式碼因縮排跑到 while 迴圈外，導致完全不會執行（不響鈴、不等待、
+不能按 M 切換），現已修正回迴圈內。
 ===========================================================
 """
 import time
@@ -308,23 +312,27 @@ def choose_url():
     return chosen_url
 
 
-def choose_party_size():
-    """讓使用者輸入用餐人數（大人），直接按 Enter 則使用預設值。"""
+def choose_party_size(current_party_size=None):
+    """
+    讓使用者輸入用餐人數（大人），直接按 Enter 則使用預設值
+    （如果有帶入 current_party_size，則 Enter 時沿用目前設定，而非固定的預設值）。
+    """
+    fallback = current_party_size if current_party_size else DEFAULT_PARTY_SIZE
     print("=" * 65)
     print("   設定用餐人數")
     print("=" * 65)
     while True:
         raw = input(
-            f"請輸入用餐人數（大人，直接按 Enter 使用預設 {DEFAULT_PARTY_SIZE} 位）: "
+            f"請輸入用餐人數（大人，直接按 Enter 使用 {fallback} 位）: "
         ).strip()
         if raw == "":
-            print(f"\n[{ts()}] 已選擇人數: {DEFAULT_PARTY_SIZE} 位大人\n")
-            return DEFAULT_PARTY_SIZE
+            print(f"\n[{ts()}] 已選擇人數: {fallback} 位大人\n")
+            return fallback
         if raw.isdigit() and MIN_PARTY_SIZE <= int(raw) <= MAX_PARTY_SIZE:
             party_size = int(raw)
             print(f"\n[{ts()}] 已選擇人數: {party_size} 位大人\n")
             return party_size
-        print(f"⚠️ 請輸入 {MIN_PARTY_SIZE}~{MAX_PARTY_SIZE} 之間的整數，或直接按 Enter 使用預設值。\n")
+        print(f"⚠️ 請輸入 {MIN_PARTY_SIZE}~{MAX_PARTY_SIZE} 之間的整數，或直接按 Enter 使用目前設定。\n")
 
 
 def choose_target_date():
@@ -351,28 +359,31 @@ def choose_mode():
     while True:
         choice = input("請輸入編號選擇模式（直接按 Enter 預設為日期模式）: ").strip()
         if choice in ("", "1"):
-            print(f"\n[{ts()}] 已選擇：日期模式\n")
-            return "DATE", None
+            print(f"\n[{ts()}] 已選擇：日期模式")
+            target_date = choose_target_date()
+            print(f"[{ts()}] 鎖定日期：{target_date}（只有這天有位才會響鈴）\n")
+            return "DATE", target_date
         if choice == "2":
             target_date = choose_target_date()
             print(f"\n[{ts()}] 已選擇：時段模式（鎖定日期 {target_date}）\n")
             return "TIME_SLOT", target_date
         print("⚠️ 輸入無效，請重新輸入。\n")
 
-
-def handle_switch_request(page, current_url, party_size):
+def handle_switch_request(page, current_url, current_mode, current_target_date, party_size):
     """
     使用者在等待期間按下切換鍵後呼叫。
-    先問要「只切換掃描模式」還是「重新選擇店家網址」，
-    如果選擇重新選店家，會直接在同一個瀏覽器分頁導覽到新網址，
-    並接著再選一次掃描模式（因為換了店家，原本鎖定的日期/時段不一定適用）。
-    回傳 (新的 url, 新的 mode, 新的 target_date)。
+    可以選擇：
+      [1] 只切換掃描模式（日期模式 / 時段模式）
+      [2] 重新選擇店家網址（會回到選擇店家畫面，接著再選一次模式）
+      [3] 重新選擇用餐人數（維持目前的模式 / 日期設定不變）
+    回傳 (新的 url, 新的 mode, 新的 target_date, 新的 party_size)。
     """
     print("=" * 65)
     print("   切換設定")
     print("=" * 65)
     print("  [1] 只切換掃描模式（日期模式 / 時段模式）")
     print("  [2] 重新選擇店家網址（會回到選擇店家畫面，接著再選一次模式）")
+    print("  [3] 重新選擇用餐人數")
     print()
     choice = input("請輸入編號（直接按 Enter 預設為 1）: ").strip()
 
@@ -388,10 +399,17 @@ def handle_switch_request(page, current_url, party_size):
         select_party_size(page, party_size)
         page.wait_for_timeout(800)
         new_mode, new_target_date = choose_mode()
-        return new_url, new_mode, new_target_date
+        return new_url, new_mode, new_target_date, party_size
+
+    if choice == "3":
+        new_party_size = choose_party_size(current_party_size=party_size)
+        select_party_size(page, new_party_size)
+        page.wait_for_timeout(800)
+        print(f"[{ts()}] 已套用新的人數設定，模式維持不變。\n")
+        return current_url, current_mode, current_target_date, new_party_size
 
     new_mode, new_target_date = choose_mode()
-    return current_url, new_mode, new_target_date
+    return current_url, new_mode, new_target_date, party_size
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -451,6 +469,39 @@ def open_date_picker(page):
 def get_clickable_calendar_days(page):
     """找出月曆上所有日期格。"""
     return page.locator('[data-cy="bt-cal-day"]')
+
+
+def select_calendar_date(page, target_date_str):
+    """
+    展開月曆並點選指定日期（YYYY-MM-DD），讓頁面切換顯示該天的時段。
+    時段模式如果不呼叫這個函式，頁面重新整理後會停留在預設的「今天」，
+    導致不管設定哪個目標日期，抓到的都還是今天的時段。
+    """
+    try:
+        if not open_date_picker(page):
+            print(f"[{ts()}]   ⚠️ 無法展開月曆，可能仍停留在目前選中的日期。")
+            return False
+        page.wait_for_timeout(400)
+
+        day_buttons = get_clickable_calendar_days(page)
+        count = day_buttons.count()
+        for i in range(count):
+            day_div = day_buttons.nth(i)
+            date_str = day_div.get_attribute("data-date")
+            if date_str != target_date_str:
+                continue
+            if day_div.get_attribute("disabled") is not None:
+                print(f"[{ts()}]   ⚠️ 目標日期 {target_date_str} 目前不可選取（可能已滿或未開放）。")
+                return False
+            day_div.click(timeout=3000)
+            print(f"[{ts()}]   已在月曆上點選目標日期: {target_date_str}")
+            return True
+
+        print(f"[{ts()}]   ⚠️ 月曆上找不到日期 {target_date_str}（可能超出目前可訂範圍）。")
+        return False
+    except Exception as e:
+        print(f"[{ts()}]   ⚠️ 點選月曆日期失敗: {e}")
+        return False
 
 
 def check_availability(page, party_size):
@@ -583,6 +634,16 @@ def check_time_slots(page, target_date_str, party_size):
             pass
         page.wait_for_timeout(2500)
 
+        # 頁面重新整理後預設停留在「今天」，時段模式必須主動點選目標日期，
+        # 否則不管設定哪一天，抓到的永遠是今天的時段。
+        date_selected = select_calendar_date(page, target_date_str)
+        if date_selected:
+            try:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
+
         slots = scan_time_slot_buttons(page)
 
         if not slots:
@@ -653,7 +714,7 @@ def main():
 
     print("瀏覽器只會開啟一次，之後在同一個分頁定期重新整理檢查，")
     print("不會每次都整個關閉重開。如果遇到人機驗證，視窗會保持開啟等你點擊通過！")
-    print(f"提示：在等待檢查的期間，隨時按下「{SWITCH_MODE_KEY.upper()}」鍵可以切換掃描模式，或重新選擇店家網址，不必重開程式。")
+    print(f"提示：在等待檢查的期間，隨時按下「{SWITCH_MODE_KEY.upper()}」鍵可以切換掃描模式、重新選擇店家網址，或重新選擇用餐人數，不必重開程式。")
     print()
 
     os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -713,22 +774,34 @@ def main():
                     status, results = check_availability(page, party_size)
 
                 if status == "FOUND":
+                    should_alert = False
+
                     if mode == "TIME_SLOT":
                         summary = f"{target_date} 可訂時段：{format_slots_for_notify(results)}"
+                        should_alert = True
                     else:
+                        # 日期模式：只有指定日期有出現才響鈴
                         summary = "可訂日期：" + format_dates_for_notify(results)
+                        if target_date in results:
+                            should_alert = True
+                            summary = f"指定日期 {target_date} 有位！" + summary
 
                     print(f"[{ts()}] 🎉 {summary}")
+
                     wait_s = next_interval()
-                    alert()
-                    notify(
-                        "Inline 訂位提醒 🎉",
-                        summary + f"\n下次檢查：{next_check_time_str(wait_s)}"
-                    )
+
+                    if should_alert:
+                        alert()
+                        notify(
+                            "Inline 訂位提醒 🎉",
+                            summary + f"\n下次檢查：{next_check_time_str(wait_s)}"
+                        )
+                    else:
+                        print(f"[{ts()}] （未包含指定日期 {target_date}，不響鈴）")
 
                 elif status == "CAPTCHA":
                     print(f"[{ts()}] ⚠️ 偵測到驗證頁！請在瀏覽器視窗中手動完成驗證。")
-                    print(f"[{ts()}] 30 秒後會自動重新檢查...（等待期間按「{SWITCH_MODE_KEY.upper()}」鍵可切換模式或店家）")
+                    print(f"[{ts()}] 30 秒後會自動重新檢查...（等待期間按「{SWITCH_MODE_KEY.upper()}」鍵可切換模式、店家或人數）")
                     alert()
                     notify(
                         "Inline 監控提醒 ⚠️",
@@ -738,9 +811,9 @@ def main():
                     want_switch = interruptible_sleep(30)
                     if want_switch:
                         print(f"\n[{ts()}] 偵測到切換要求...\n")
-                        url, mode, target_date = handle_switch_request(page, url, party_size)
+                        url, mode, target_date, party_size = handle_switch_request(page, url, mode, target_date, party_size)
                         mode_desc = "日期模式" if mode == "DATE" else f"時段模式（鎖定 {target_date}）"
-                        print(f"[{ts()}] 目前設定：{mode_desc} | 店家: {url}\n")
+                        print(f"[{ts()}] 目前設定：{mode_desc} | 人數：{party_size} 位大人 | 店家: {url}\n")
                     continue
 
                 else:
@@ -750,14 +823,14 @@ def main():
                         print(f"[{ts()}] 目前無可用位置。")
                     wait_s = next_interval()
 
-                print(f"[{ts()}] 下次檢查：{next_check_time_str(wait_s)}（等待期間按「{SWITCH_MODE_KEY.upper()}」鍵可切換模式或店家）")
+                print(f"[{ts()}] 下次檢查：{next_check_time_str(wait_s)}（等待期間按「{SWITCH_MODE_KEY.upper()}」鍵可切換模式、店家或人數）")
                 print()
                 want_switch = interruptible_sleep(wait_s)
                 if want_switch:
                     print(f"\n[{ts()}] 偵測到切換要求...\n")
-                    url, mode, target_date = handle_switch_request(page, url, party_size)
+                    url, mode, target_date, party_size = handle_switch_request(page, url, mode, target_date, party_size)
                     mode_desc = "日期模式" if mode == "DATE" else f"時段模式（鎖定 {target_date}）"
-                    print(f"[{ts()}] 目前設定：{mode_desc} | 店家: {url}\n")
+                    print(f"[{ts()}] 目前設定：{mode_desc} | 人數：{party_size} 位大人 | 店家: {url}\n")
 
         except KeyboardInterrupt:
             print()
