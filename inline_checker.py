@@ -45,6 +45,7 @@ inline_checker.py  -  Inline 訂位監控程式
 修正：修復主迴圈中「找到位置 / 人機驗證 / 無位置」處理區塊的縮排錯誤，
 之前這段程式碼因縮排跑到 while 迴圈外，導致完全不會執行（不響鈴、不等待、
 不能按 M 切換），現已修正回迴圈內。
+修正：可訂時段通知/主控台訊息改為完整列出所有時段，不再截斷成「等共N個時段」。
 ===========================================================
 """
 import time
@@ -149,15 +150,11 @@ def format_dates_for_notify(dates, max_shown=4):
     return text
 
 
-def format_slots_for_notify(slots, max_shown=6):
-    """把時段清單濃縮成適合通知顯示的簡短文字。"""
+def format_slots_for_notify(slots):
+    """把時段清單完整列出（不截斷），並附上總數。"""
     count = len(slots)
-    shown = slots[:max_shown]
-    text = "、".join(shown)
-    if count > max_shown:
-        text += f" 等共{count}個時段"
-    else:
-        text += f"（共{count}個時段）"
+    text = "、".join(slots)
+    text += f"（共{count}個時段）"
     return text
 
 
